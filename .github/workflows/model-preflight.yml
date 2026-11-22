@@ -1,0 +1,100 @@
+name: Gemma-4 model metadata preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-model:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Check runner capacity
+        run: |
+          set -euo pipefail
+          echo "Runner: $(uname -m)"
+          python3 --version
+          free -h
+          df -h /
+
+      - name: Inspect Hugging Face model metadata (no weight download)
+        env:
+          MODEL_ID: google/gemma-4-E2B-it
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          model_id = os.environ["MODEL_ID"]
+          api_url = f"https://huggingface.co/api/models/{model_id}?blobs=true"
+
+          def get_json(url):
+              req = urllib.request.Request(
+                  url,
+                  headers={"User-Agent": "rkllm-gemma4-build-model-preflight/1.0"}
+              )
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)
+
+          info = get_json(api_url)
+          revision = info.get("sha")
+          if not revision:
+              raise SystemExit("ERROR: Hugging Face API did not return a model revision")
+
+          print(f"Model ID: {model_id}")
+          print(f"Resolved revision: {revision}")
+          print(f"License: {info.get('cardData', {}).get('license', 'not declared in cardData')}")
+
+          config_url = f"https://huggingface.co/{model_id}/resolve/{revision}/config.json"
+          config = get_json(config_url)
+          print(f"model_type: {config.get('model_type')}")
+          print(f"architectures: {config.get('architectures')}")
+          print(f"dtype: {config.get('dtype')}")
+          print(f"vision_config present: {bool(config.get('vision_config'))}")
+          print(f"audio_config present: {bool(config.get('audio_config'))}")
+          print(f"image_token_id: {config.get('image_token_id')}")
+          print(f"audio_token_id: {config.get('audio_token_id')}")
+          print(f"video_token_id: {config.get('video_token_id')}")
+
+          siblings = info.get("siblings", [])
+          print("\nRepository files:")
+          total_bytes = 0
+          weight_files = []
+          required = {
+              "config.json",
+              "model.safetensors",
+              "tokenizer.json",
+              "tokenizer_config.json",
+              "processor_config.json",
+          }
+          present = set()
+          for item in siblings:
+              name = item.get("rfilename", "")
+              present.add(name)
+              lfs = item.get("lfs") or {}
+              size = lfs.get("size") or item.get("size")
+              if isinstance(size, int):
+                  total_bytes += size
+                  if name.endswith(".safetensors"):
+                      weight_files.append((name, size))
+              print(f"- {name}" + (f" ({size:,} bytes)" if isinstance(size, int) else ""))
+
+          missing = sorted(required - present)
+          if missing:
+              raise SystemExit("ERROR: Missing expected model files: " + ", ".join(missing))
+          if config.get("model_type") != "gemma4":
+              raise SystemExit("ERROR: Unexpected model_type; expected gemma4")
+          if not config.get("vision_config") or not config.get("audio_config"):
+              raise SystemExit("ERROR: Expected vision_config and audio_config in Gemma-4 config")
+
+          print("\nSafetensors files:")
+          for name, size in weight_files:
+              print(f"- {name}: {size / (1024**3):.2f} GiB")
+          print(f"Reported repository file bytes: {total_bytes:,}")
+          print("\nPASS: model metadata is reachable and the expected Gemma-4 multimodal config is present.")
+          print("NOTE: Model weights were not downloaded or loaded.")
+          PY
