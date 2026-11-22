@@ -1,0 +1,85 @@
+name: Runner environment check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-check-\${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inspect:
+    name: Inspect GitHub-hosted runner
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inspect operating system and hardware
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## GitHub Actions runner diagnostics"
+            echo
+            echo "- Repository: $GITHUB_REPOSITORY"
+            echo "- Runner: $RUNNER_NAME"
+            echo "- OS: $(. /etc/os-release && echo "$PRETTY_NAME")"
+            echo "- Architecture: $(uname -m)"
+            echo "- Kernel: $(uname -sr)"
+            echo
+            echo "### CPU"
+            lscpu | grep -E '^(Architecture|CPU\\(s\\)|Model name|Thread\\(s\\) per core|Core\\(s\\) per socket|Socket\\(s\\)):' || true
+            echo
+            echo "### Memory"
+            free -h
+            echo
+            echo "### Disk"
+            df -h /
+            lsblk -o NAME,SIZE,TYPE,MOUNTPOINT
+            echo
+            echo "### Python"
+            python3 --version
+            python3 -m pip --version
+            command -v python3
+            echo
+            echo "### Cgroup memory limit (if exposed)"
+            for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+              if [ -r "$f" ]; then printf '%s: ' "$f"; cat "$f"; fi
+            done
+          } | tee "$RUNNER_TEMP/diagnostics.txt"
+          cat "$RUNNER_TEMP/diagnostics.txt" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check access to upstream source repositories
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import urllib.request
+          urls = {
+              "RKLLM repository": "https://github.com/airockchip/rknn-llm",
+              "RKNN Toolkit2 repository": "https://github.com/airockchip/rknn-toolkit2",
+              "Hugging Face model page": "https://huggingface.co/google/gemma-4-E2B-it",
+          }
+          for name, url in urls.items():
+              try:
+                  req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "rkllm-gemma4-build-diagnostics"})
+                  with urllib.request.urlopen(req, timeout=20) as response:
+                      print(f"OK   {name}: HTTP {response.status}")
+              except Exception as exc:
+                  print(f"WARN {name}: {type(exc).__name__}: {exc}")
+          PY
+
+      - name: Record conclusion
+        shell: bash
+        run: |
+          {
+            echo
+            echo "### Important"
+            echo "This workflow only inspects the runner. It does not install vendor toolkits, download model weights, convert models, or create large artifacts."
+            echo "Review the log and runner specifications before starting a paid or memory-intensive conversion."
+          } >> "$GITHUB_STEP_SUMMARY"
