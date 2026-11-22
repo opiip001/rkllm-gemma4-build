@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: runner-check-\${{ github.ref }}
+  group: runner-check-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -33,7 +33,7 @@ jobs:
             echo "- Kernel: $(uname -sr)"
             echo
             echo "### CPU"
-            lscpu | grep -E '^(Architecture|CPU\\(s\\)|Model name|Thread\\(s\\) per core|Core\\(s\\) per socket|Socket\\(s\\)):' || true
+            lscpu | grep -E '^(Architecture|CPU\(s\)|Model name|Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)):' || true
             echo
             echo "### Memory"
             free -h
